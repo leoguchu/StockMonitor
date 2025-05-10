@@ -26,9 +26,11 @@ NOTICE_EMAIL_SENDER = 'GIT机器人'
 SMTP_SERVER = 'smtp.qq.com'
 SMTP_PORT = 465
 
+
 # API endpoints
 IFIND_BASE_URL = 'https://ft.10jqka.com.cn'
-TOKEN_URL = f'{IFIND_BASE_URL}/api/v1/get_access_token'
+GET_TOKEN_URL = f'{IFIND_BASE_URL}/api/v1/get_access_token'
+UPDATE_TOKEN_URL = f'{IFIND_BASE_URL}/api/v1/update_access_token'
 REALTIME_URL = f'{IFIND_BASE_URL}/api/v1/real_time_quotation'
 
 # Notion字段名称配置
@@ -53,7 +55,7 @@ def get_notion_headers():
 
 
 def get_ifind_access_token():
-    """获取iFinD access_token（带缓存机制）"""
+    """获取并缓存access_token（带设备超限重试机制）"""
     global ACCESS_TOKEN_CACHE
 
     if ACCESS_TOKEN_CACHE:
@@ -65,19 +67,38 @@ def get_ifind_access_token():
     }
 
     try:
-        response = requests.post(TOKEN_URL, headers=headers, timeout=10)
+        # 首次获取token
+        response = requests.post(GET_TOKEN_URL, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
 
-        if data.get('errorcode') != 0:
-            raise Exception(f"Token获取失败: {data.get('message')}")
+        # 处理设备超限情况
+        if data.get('errorcode') != 0 and data.get('errmsg') == 'Device exceed limit.':
+            # 执行设备令牌更新
+            print(f"设备超限，更新access令牌")
+            update_response = requests.post(UPDATE_TOKEN_URL, headers=headers, timeout=10)
+            update_response.raise_for_status()
 
+            # 更新后重新获取token
+            response = requests.post(GET_TOKEN_URL, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+        # 最终校验请求结果
+        if data.get('errorcode') != 0:
+            raise Exception(f"返回原因：{data.get('errmsg')}")
+
+        # 更新缓存并返回
         ACCESS_TOKEN_CACHE = data['data']['access_token']
         return ACCESS_TOKEN_CACHE
 
+    except requests.exceptions.RequestException as e:
+        print(f"❌ 网络请求失败: {str(e)}")
     except Exception as e:
         print(f"❌ 获取access_token失败: {str(e)}")
-        return None
+
+    return None
+
 
 
 def query_notion_entries() -> List[Dict]:
@@ -199,7 +220,7 @@ def fetch_stock_prices(codes: List[str]) -> Dict[str, float]:
         return {}
     except Exception as e:
         print(f"❌ 未知错误: {str(e)}")
-        traceback.print_exc()
+        # traceback.print_exc()
         return {}
 
 def send_alert_email(action: str, record: Dict, price: float):
@@ -314,7 +335,7 @@ def main():
                 if update_notion_property(record['page_id'], low=new_low):
                     print(f"已更新 {record['symbol']} 低位线至 {new_low:.2f}")
         else:
-            print(f"▬ {record['symbol']} 价格在正常区间")
+            print(f"▬ {record['symbol']} 价格未突破设定区间")
 
     print("=== 监控任务完成 ===")
 
